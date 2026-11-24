@@ -7,7 +7,7 @@
 #include <string.h>
 
 // ============================================================================
-//  CardLyre Pro v3.0 — 6-Mode Polyphonic Workstation (Cardputer-Adv & V1)
+//  MMCTool 6-Mode Polyphonic Workstation (Cardputer-Adv & V1)
 //  Raw 4x14 Physical Matrix Input:
 //    Play Grid (3x8 = 24 Pads):
 //      Row 1: Q   W   E   R   T   Y   U   I   (Pads 1..8)
@@ -344,6 +344,7 @@ static File     recFile;
 static File     playFile;
 static volatile bool isRecording = false;
 static volatile bool isPlayingRec = false;
+static volatile uint8_t playChannels = 1;
 static uint32_t recDataBytes  = 0;
 static uint32_t recStartMs    = 0;
 static int      recListCount  = 0;
@@ -360,7 +361,7 @@ static int16_t  recRing[REC_RING_SAMPLES];
 static volatile uint32_t recWriteIdx = 0;
 static volatile uint32_t recReadIdx  = 0;
 
-constexpr uint32_t PLAY_RING_SAMPLES = 4096; // 8 KB
+constexpr uint32_t PLAY_RING_SAMPLES = 8192; // 16 KB smooth 256ms mono buffer
 static int16_t  playRing[PLAY_RING_SAMPLES];
 static volatile uint32_t playWriteIdx = 0;
 static volatile uint32_t playReadIdx  = 0;
@@ -368,11 +369,11 @@ static volatile uint32_t playReadIdx  = 0;
 static void writeWavHeader(File& f, uint32_t dataBytes) {
   uint8_t hdr[44] = {};
   uint32_t chunkSize = 36 + dataBytes;
-  uint32_t byteRate  = SAMPLE_RATE * 2 * 2; // 32kHz * stereo * 16-bit
+  uint32_t byteRate  = SAMPLE_RATE * 1 * 2; // 32kHz * mono * 16-bit (64 KB/s, lag-free SD!)
   memcpy(hdr + 0,  "RIFF", 4);
   memcpy(hdr + 4,  &chunkSize, 4);
   memcpy(hdr + 8,  "WAVEfmt ", 8);
-  uint32_t sub1 = 16; uint16_t pcm = 1, ch = 2, align = 4, bps = 16;
+  uint32_t sub1 = 16; uint16_t pcm = 1, ch = 1, align = 2, bps = 16;
   uint32_t sr = SAMPLE_RATE;
   memcpy(hdr + 16, &sub1, 4);
   memcpy(hdr + 20, &pcm, 2);
@@ -404,7 +405,7 @@ static void scanRecFolder() {
         strncpy(recNames[recListCount], base, 23);
         recNames[recListCount][23] = '\0';
         uint32_t sz = f.size();
-        recDurs[recListCount] = (sz > 44) ? (uint16_t)((sz - 44) / (SAMPLE_RATE * 4)) : 0;
+        recDurs[recListCount] = (sz > 44) ? (uint16_t)((sz - 44) / (SAMPLE_RATE * 2)) : 0;
         recListCount++;
       }
     }
@@ -454,7 +455,9 @@ static void startRecording() {
 }
 
 static void stopPlaybackRec() {
+  if (!isPlayingRec && !playFile) return;
   isPlayingRec = false;
+  delay(12); // Wait for Core 0 audio frame to finish reading ring buffer
   if (playFile) playFile.close();
   playReadIdx = playWriteIdx = 0;
 }
@@ -468,37 +471,49 @@ static void startPlaybackRec() {
   playFile = SD.open(path, FILE_READ);
   if (!playFile) return;
   if (playFile.size() <= 44) { playFile.close(); return; }
-  playFile.seek(44); // Skip WAV header
+  uint8_t hdr[44];
+  playFile.read(hdr, 44);
+  playChannels = (hdr[22] == 2) ? 2 : 1; // Auto-handle both old Stereo & new Mono WAVs!
   playReadIdx = playWriteIdx = 0;
-  isPlayingRec = true;
+  // Pre-fill ring buffer so playback starts with 0ms stutter!
+  int pre = playFile.read((uint8_t*)playRing, PLAY_RING_SAMPLES * 2);
+  if (pre > 0) {
+    playWriteIdx = (uint32_t)(pre / 2);
+    isPlayingRec = true;
+  } else {
+    playFile.close();
+  }
 }
 
 static void serviceSDStreams() {
   if (isRecording && recFile) {
-    uint32_t avail = recWriteIdx - recReadIdx;
-    // Write small 512-sample (1 KB) blocks so UI & video stay super smooth!
-    if (avail >= 512) {
+    // Drain in 4 KB (2048-sample) sector-aligned bursts — keeps up effortlessly at 64 KB/s!
+    int loops = 0;
+    while ((recWriteIdx - recReadIdx) >= 2048 && loops < 3) {
       uint32_t rPos  = recReadIdx % REC_RING_SAMPLES;
-      uint32_t chunk = min(avail, REC_RING_SAMPLES - rPos);
-      if (chunk > 512) chunk = 512;
+      uint32_t chunk = min((uint32_t)(recWriteIdx - recReadIdx), REC_RING_SAMPLES - rPos);
+      if (chunk > 2048) chunk = 2048;
       recFile.write((const uint8_t*)&recRing[rPos], chunk * 2);
       recDataBytes += chunk * 2;
       recReadIdx += chunk;
+      loops++;
     }
   }
   if (isPlayingRec && playFile) {
-    uint32_t used = playWriteIdx - playReadIdx;
-    uint32_t freeSp = PLAY_RING_SAMPLES - used;
-    if (freeSp >= 512) {
+    int loops = 0;
+    while ((PLAY_RING_SAMPLES - (playWriteIdx - playReadIdx)) >= 2048 && loops < 3) {
       uint32_t wPos  = playWriteIdx % PLAY_RING_SAMPLES;
+      uint32_t freeSp = PLAY_RING_SAMPLES - (playWriteIdx - playReadIdx);
       uint32_t chunk = min(freeSp, PLAY_RING_SAMPLES - wPos);
-      if (chunk > 1024) chunk = 1024;
+      if (chunk > 2048) chunk = 2048;
       int rd = playFile.read((uint8_t*)&playRing[wPos], chunk * 2);
       if (rd > 0) {
         playWriteIdx += (uint32_t)(rd / 2);
       } else {
-        stopPlaybackRec();
+        if (playReadIdx >= playWriteIdx) stopPlaybackRec();
+        break;
       }
+      loops++;
     }
   }
 }
@@ -1207,13 +1222,20 @@ private:
         finL = finL / (1.0f + fabsf(finL) * 0.55f);
         finR = finR / (1.0f + fabsf(finR) * 0.55f);
 
-        // Mix recorded WAV playback (allows live overdubbing!)
-        if (isPlayingRec && (playWriteIdx - playReadIdx) >= 2) {
-          float pL = (float)playRing[playReadIdx % PLAY_RING_SAMPLES] * (1.0f / 32768.0f);
-          float pR = (float)playRing[(playReadIdx + 1) % PLAY_RING_SAMPLES] * (1.0f / 32768.0f);
-          playReadIdx += 2;
-          finL = constrain(finL + pL * 0.85f, -1.0f, 1.0f);
-          finR = constrain(finR + pR * 0.85f, -1.0f, 1.0f);
+        // Mix recorded WAV playback (auto-supports Mono 1ch & legacy Stereo 2ch at exact 1x speed!)
+        if (isPlayingRec) {
+          if (playChannels == 2 && (playWriteIdx - playReadIdx) >= 2) {
+            float pL = (float)playRing[playReadIdx % PLAY_RING_SAMPLES] * (1.0f / 32768.0f);
+            float pR = (float)playRing[(playReadIdx + 1) % PLAY_RING_SAMPLES] * (1.0f / 32768.0f);
+            playReadIdx += 2;
+            finL = constrain(finL + pL * 0.88f, -1.0f, 1.0f);
+            finR = constrain(finR + pR * 0.88f, -1.0f, 1.0f);
+          } else if (playChannels == 1 && (playWriteIdx - playReadIdx) >= 1) {
+            float pMono = (float)playRing[playReadIdx % PLAY_RING_SAMPLES] * (1.0f / 32768.0f);
+            playReadIdx++;
+            finL = constrain(finL + pMono * 0.88f, -1.0f, 1.0f);
+            finR = constrain(finR + pMono * 0.88f, -1.0f, 1.0f);
+          }
         }
 
         int16_t sL = (int16_t)(constrain(finL, -1.0f, 1.0f) * 32000.0f);
@@ -1221,11 +1243,10 @@ private:
         outBuf[s * 2]     = sL;
         outBuf[s * 2 + 1] = sR;
 
-        // Push stereo sample to lock-free WAV recording ring buffer
-        if (isRecording && (recWriteIdx - recReadIdx) <= (REC_RING_SAMPLES - 2)) {
-          recRing[recWriteIdx % REC_RING_SAMPLES]       = sL;
-          recRing[(recWriteIdx + 1) % REC_RING_SAMPLES] = sR;
-          recWriteIdx += 2;
+        // Push clean mono-summed sample to 256ms lock-free WAV recording ring buffer
+        if (isRecording && (recWriteIdx - recReadIdx) < REC_RING_SAMPLES) {
+          recRing[recWriteIdx % REC_RING_SAMPLES] = (int16_t)(((int32_t)sL + (int32_t)sR) >> 1);
+          recWriteIdx++;
         }
 
         if ((++scopeDiv & 3) == 0) {
@@ -1310,7 +1331,7 @@ static bool isHoldProtectedPos(int x, int y) {
   if (y == 0 && x >= 1 && x <= 10) return true;  // 1..0 (Note: - and = are now 1-tap Octave -3..+3!)
   if (x == 0 && y >= 1 && y <= 3) return true;   // Left column: Tab(REESE), Fn(CHAIN), Ctrl(ACID)
   if (y == 1 && (x == 9 || x == 10 || x == 13)) return true; // O, P, \ (REC)
-  if (y == 2 && (x == 9 || x == 10 || x == 12 || x == 13)) return true; // K, L, ', Enter
+  if (y == 2 && (x == 9 || x == 10 || x == 11 || x == 12 || x == 13)) return true; // K, L, ; (KEY), ', Enter
   if (y == 3 && x == 12) return true; // / (GUIDE)
   return false;
 }
@@ -1334,6 +1355,7 @@ static const char* holdPosLabel(int x, int y) {
   if (y == 1 && x == 13) return isRecording ? "STOP REC" : "REC WAV";
   if (y == 2 && x == 9)  return "MOD FX";
   if (y == 2 && x == 10) return "FILTER";
+  if (y == 2 && x == 11) return "KEY +1";
   if (y == 2 && x == 12) return "THEME";
   if (y == 2 && x == 13) return isPlayingRec ? "STOP PLAY" : "PLAY REC";
   if (y == 3 && x == 12) return guideActive ? "GUIDE OFF" : "GUIDE ON";
@@ -1382,6 +1404,7 @@ static void fireHoldPos(int x, int y) {
   } else if (y == 2) {
     if (x == 9)       synth.modMode    = (synth.modMode + 1) % 3;
     else if (x == 10) synth.filterMode = (synth.filterMode + 1) % 3;
+    else if (x == 11) { transpose = (transpose >= 11) ? 0 : (transpose + 1); synth.releaseAll(); }
     else if (x == 12) { themeIdx = (themeIdx + 1) % THEME_COUNT; saveThemeToNVS(); }
     else if (x == 13) { if (isPlayingRec) stopPlaybackRec(); else startPlaybackRec(); }
   } else if (y == 3 && x == 12) {
@@ -1783,9 +1806,17 @@ static void renderUI() {
         canvas.fillCircle(cx, cy, 6, fillC);
         canvas.drawCircle(cx, cy, 6, rimC);
         canvas.setTextColor(down ? th.bg : th.text, fillC);
-        char nb[4];
-        snprintf(nb, sizeof(nb), "%d", num);
-        canvas.drawCenterString(nb, cx, cy - 3);
+        if (synth.instrument == INST_DRUMS || (synth.instrument == INST_DRUMPAD && r == 2)) {
+          char nb[4]; snprintf(nb, sizeof(nb), "%d", num);
+          canvas.drawCenterString(nb, cx, cy - 3);
+        } else if (synth.instrument == INST_DRUMPAD && r == 0) {
+          canvas.drawCenterString(DPAD_CHORD_NAMES[c], cx, cy - 3);
+        } else if (synth.instrument == INST_DRUMPAD && r == 1) {
+          canvas.drawCenterString(NOTE_NAMES[(DPAD_BASS_NOTES[c] + transpose + 120) % 12], cx, cy - 3);
+        } else {
+          int midi = mapPadToMidi(r, c, curLayout, synth.instrument, transpose);
+          canvas.drawCenterString(NOTE_NAMES[midi % 12], cx, cy - 3);
+        }
       }
     }
   } else {
@@ -2022,9 +2053,9 @@ static void processKeyboard() {
             int n2 = (synth.instrument == INST_EGTR) ? (root + 7)  : (root + ((c == 2 || c == 5 || c == 6) ? 4 : 3));
             int n3 = (synth.instrument == INST_EGTR) ? (root + 12) : (root + 7);
             synth.noteOn((uint8_t)constrain(root, 33, 96), padId, synth.instrument);
-            delay(18);
+            serviceSDStreams(); delay(14);
             synth.noteOn((uint8_t)constrain(n2,   33, 96), padId, synth.instrument);
-            delay(18);
+            serviceSDStreams(); delay(14);
             synth.noteOn((uint8_t)constrain(n3,   33, 96), padId, synth.instrument);
           } else {
             int midi = mapPadToMidi(r, c, curLayout, synth.instrument, transpose);
@@ -2114,7 +2145,7 @@ void setup() {
   showBootSplash();
 
   sdSPI.begin(PIN_SD_SCK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
-  sdReady = SD.begin(PIN_SD_CS, sdSPI, 16000000);
+  sdReady = SD.begin(PIN_SD_CS, sdSPI, 20000000);
   if (sdReady) { scanRecFolder(); scanSongFolder(); }
 
   synth.begin();
@@ -2133,7 +2164,7 @@ void loop() {
     lastBatMs = now;
     batteryPct = M5Cardputer.Power.getBatteryLevel();
   }
-  uint32_t frameMs = isRecording ? 40 : 25; // Smooth 25 FPS while recording to SD
+  uint32_t frameMs = (isRecording || isPlayingRec) ? 35 : 25;
   if (now - lastDrawMs >= frameMs) {
     lastDrawMs = now;
     renderUI();
