@@ -1,0 +1,39 @@
+name: Build MMCTool Firmware
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO & esptool
+        run: pip install -U platformio esptool "click<8.2"
+
+      - name: Build firmware
+        run: pio run -e cardputer_adv
+
+      - name: Create M5Launcher & FullFlash binaries
+        run: |
+          mkdir -p release_bins
+          cp .pio/build/cardputer_adv/firmware.bin release_bins/MMCTool_v1.0_M5Launcher.bin
+          python3 -m esptool --chip esp32s3 merge_bin -o release_bins/MMCTool_v1.0_FullFlash_0x0.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 8MB \
+            0x0 .pio/build/cardputer_adv/bootloader.bin \
+            0x8000 .pio/build/cardputer_adv/partitions.bin \
+            0x10000 .pio/build/cardputer_adv/firmware.bin
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MMCTool-v1.0-Firmware
+          path: release_bins/*.bin
