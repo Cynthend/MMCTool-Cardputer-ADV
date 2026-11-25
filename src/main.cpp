@@ -7,7 +7,7 @@
 #include <string.h>
 
 // ============================================================================
-//  MMCTool 6-Mode Polyphonic Workstation (Cardputer-Adv & V1)
+//  CardLyre Pro v3.0 — 6-Mode Polyphonic Workstation (Cardputer-Adv & V1)
 //  Raw 4x14 Physical Matrix Input:
 //    Play Grid (3x8 = 24 Pads):
 //      Row 1: Q   W   E   R   T   Y   U   I   (Pads 1..8)
@@ -1364,9 +1364,12 @@ static const char* holdPosLabel(int x, int y) {
 
 static void fireHoldPos(int x, int y) {
   if (x == 0) {
-    if (y == 1)      synth.instrument = INST_REESE;
-    else if (y == 2) synth.instrument = INST_CHAINSAW;
-    else if (y == 3) synth.instrument = INST_ACID303;
+    if (y == 0) {
+      synth.instrument = INST_PIANO;
+      curLayout = LAYOUT_PIANO;
+    } else if (y == 1) synth.instrument = INST_REESE;
+    else if (y == 2)   synth.instrument = INST_CHAINSAW;
+    else if (y == 3)   synth.instrument = INST_ACID303;
     synth.releaseAll();
   } else if (y == 0) {
     if (x == 0) {
