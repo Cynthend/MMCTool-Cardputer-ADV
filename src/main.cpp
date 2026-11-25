@@ -1123,17 +1123,32 @@ private:
             sample = (v.fltState / (1.0f + fabsf(v.fltState) * 0.55f)) * v.env * 0.78f;
             v.env *= ringing ? 0.99988f : 0.9970f;
           } else if (v.inst == INST_PIANO) {
-            // Real Acoustic Grand Piano: hammer transient + 3 warm partials + dynamic lowpass!
+            // Realistic Struck Acoustic Grand Piano (2 detuned unison strings + FM felt hammer + 2-stage sustain!)
             float f = v.freq * pitchMul;
             float dp = (f * 6.2831853f) / (float)SAMPLE_RATE;
-            v.phase  += dp;        if (v.phase  > 6.2831853f) v.phase  -= 6.2831853f;
-            v.phase2 += dp * 2.0f; if (v.phase2 > 6.2831853f) v.phase2 -= 6.2831853f;
-            v.phase3 += dp * 3.0f; if (v.phase3 > 6.2831853f) v.phase3 -= 6.2831853f;
-            float body = sinf(v.phase) * 0.62f + sinf(v.phase2) * 0.28f * v.pitchEnv + sinf(v.phase3) * 0.14f * v.pitchEnv * v.pitchEnv;
-            float hammer = (v.sampleAge < 110) ? (nextNoise() * 0.18f * (1.0f - (float)v.sampleAge / 110.0f)) : 0.0f;
-            v.pitchEnv *= 0.99945f;
-            sample = (body + hammer) * v.env * 0.85f;
-            v.env *= ringing ? 0.999935f : 0.9974f;
+            // String A + slightly detuned String B (unison shimmer) + inharmonic hammer overtone
+            v.phase  += dp;           if (v.phase  > 6.2831853f) v.phase  -= 6.2831853f;
+            v.phase2 += dp * 1.0014f; if (v.phase2 > 6.2831853f) v.phase2 -= 6.2831853f;
+            v.phase3 += dp * 2.002f;  if (v.phase3 > 6.2831853f) v.phase3 -= 6.2831853f;
+            v.phase4 += dp * 3.006f;  if (v.phase4 > 6.2831853f) v.phase4 -= 6.2831853f;
+
+            // Fast-decaying felt-hammer brightness (gives the unmistakable crisp piano strike!)
+            float bright = v.pitchEnv * v.pitchEnv;
+            float modIdx = 0.22f + 2.35f * bright;
+            float strA = sinf(v.phase  + modIdx * sinf(v.phase3));
+            float strB = sinf(v.phase2 + (modIdx * 0.7f) * sinf(v.phase4));
+            float knock = (v.sampleAge < 140) ? (nextNoise() * 0.24f * (1.0f - (float)v.sampleAge / 140.0f)) : 0.0f;
+
+            // Warm wooden soundboard lowpass that closes gently after the hammer strike
+            float raw = (strA * 0.56f + strB * 0.44f) + knock;
+            float cut = 0.14f + 0.65f * bright;
+            v.fltState += (raw - v.fltState) * cut;
+
+            // Two-stage acoustic envelope: crisp strike punch -> long warm singing hold while key is pressed!
+            float strikeBoost = 0.58f + 0.52f * v.pitchEnv;
+            v.pitchEnv *= 0.99915f;
+            sample = v.fltState * v.env * strikeBoost * 0.92f;
+            v.env *= ringing ? 0.999955f : 0.9965f;
           } else {
             // Universal Synth (SAW / SQR / TRI / PAD / PHONK BELL)
             float dp1 = (v.freq * pitchMul * 0.997f) / (float)SAMPLE_RATE;
