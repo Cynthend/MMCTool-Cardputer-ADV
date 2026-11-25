@@ -77,9 +77,10 @@ Por desgracia, las facturas no se pagan solas 💀
 
 Si te sirvió MMCTool o quieres funciones personalizadas, temas propios o un firmware a medida para tu Cardputer, escríbeme y lo armamos por un precio accesible:
 
-- **BTC:** `<tu_direccion_btc>`
-- **USDT (TRC20):** `<tu_direccion_trc20>`
-- **Contacto:** `<tu_correo_o_telegram>`
+- USDT (TRC20): TF7kf8QxKoXrHq8ixnaYG5zDXBBuRP5FWb
+- BTC: bc1qef8762lcc72zxz5w6kac4vztpjuw5vxlxaal5c
+
+Contacto: **Farbender@protonmail.com**
 
 ## Licencia
 
