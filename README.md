@@ -77,9 +77,9 @@ Unfortunately, bills can't pay themselves 💀
 
 If you like MMCTool or want custom features, bespoke themes, custom drum kits, or tailored firmware for your Cardputer, feel free to reach out:
 
-- USDT (TRC20): TF7kf8QxKoXrHq8ixnaYG5zDXBBuRP5FWb 
-- BTC: bc1qef8762lcc72zxz5w6kac4vztpjuw5vxlxaal5c
-- **Contact:** Farbender@protonmail.com
+- **BTC:** `<your_btc_address>`
+- **USDT (TRC20):** `<your_trc20_address>`
+- **Contact:** `<your_email_or_telegram>`
 
 ## License
 

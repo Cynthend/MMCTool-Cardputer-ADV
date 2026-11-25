@@ -1123,32 +1123,33 @@ private:
             sample = (v.fltState / (1.0f + fabsf(v.fltState) * 0.55f)) * v.env * 0.78f;
             v.env *= ringing ? 0.99988f : 0.9970f;
           } else if (v.inst == INST_PIANO) {
-            // Realistic Struck Acoustic Grand Piano (2 detuned unison strings + FM felt hammer + 2-stage sustain!)
+            // Pure Warm Concert Grand Piano (click-free 3ms attack, rich harmonics, zero noise clunk!)
             float f = v.freq * pitchMul;
             float dp = (f * 6.2831853f) / (float)SAMPLE_RATE;
-            // String A + slightly detuned String B (unison shimmer) + inharmonic hammer overtone
             v.phase  += dp;           if (v.phase  > 6.2831853f) v.phase  -= 6.2831853f;
-            v.phase2 += dp * 1.0014f; if (v.phase2 > 6.2831853f) v.phase2 -= 6.2831853f;
-            v.phase3 += dp * 2.002f;  if (v.phase3 > 6.2831853f) v.phase3 -= 6.2831853f;
-            v.phase4 += dp * 3.006f;  if (v.phase4 > 6.2831853f) v.phase4 -= 6.2831853f;
+            v.phase2 += dp * 1.0007f; if (v.phase2 > 6.2831853f) v.phase2 -= 6.2831853f;
+            v.phase3 += dp * 2.0005f; if (v.phase3 > 6.2831853f) v.phase3 -= 6.2831853f;
+            v.phase4 += dp * 3.0015f; if (v.phase4 > 6.2831853f) v.phase4 -= 6.2831853f;
 
-            // Fast-decaying felt-hammer brightness (gives the unmistakable crisp piano strike!)
-            float bright = v.pitchEnv * v.pitchEnv;
-            float modIdx = 0.22f + 2.35f * bright;
-            float strA = sinf(v.phase  + modIdx * sinf(v.phase3));
-            float strB = sinf(v.phase2 + (modIdx * 0.7f) * sinf(v.phase4));
-            float knock = (v.sampleAge < 140) ? (nextNoise() * 0.24f * (1.0f - (float)v.sampleAge / 140.0f)) : 0.0f;
+            // Smooth 3ms attack ramp (zero pop/knock!)
+            float atk = (v.sampleAge < 96) ? ((float)v.sampleAge / 96.0f) : 1.0f;
 
-            // Warm wooden soundboard lowpass that closes gently after the hammer strike
-            float raw = (strA * 0.56f + strB * 0.44f) + knock;
-            float cut = 0.14f + 0.65f * bright;
+            // Pitch-scaled warmth: deep notes rich & full, high notes pure & crystalline
+            float hiTame = constrain(1.25f - (f / 1400.0f), 0.35f, 1.0f);
+            float h2 = 0.34f * v.pitchEnv * hiTame;
+            float h3 = 0.16f * v.pitchEnv * v.pitchEnv * hiTame;
+            float fm = 0.38f * v.pitchEnv * hiTame;
+
+            float fund = 0.54f * sinf(v.phase + fm * sinf(v.phase3)) + 0.46f * sinf(v.phase2);
+            float raw  = fund + h2 * sinf(v.phase3) + h3 * sinf(v.phase4);
+
+            // Gentle soundboard warmth filter
+            float cut = 0.32f + 0.42f * v.pitchEnv;
             v.fltState += (raw - v.fltState) * cut;
 
-            // Two-stage acoustic envelope: crisp strike punch -> long warm singing hold while key is pressed!
-            float strikeBoost = 0.58f + 0.52f * v.pitchEnv;
-            v.pitchEnv *= 0.99915f;
-            sample = v.fltState * v.env * strikeBoost * 0.92f;
-            v.env *= ringing ? 0.999955f : 0.9965f;
+            v.pitchEnv *= 0.99942f;
+            sample = v.fltState * atk * v.env * 0.90f;
+            v.env *= ringing ? 0.999955f : 0.9968f;
           } else {
             // Universal Synth (SAW / SQR / TRI / PAD / PHONK BELL)
             float dp1 = (v.freq * pitchMul * 0.997f) / (float)SAMPLE_RATE;
@@ -1346,7 +1347,7 @@ static bool isHoldProtectedPos(int x, int y) {
   if (y == 0 && x >= 1 && x <= 10) return true;  // 1..0 (Note: - and = are now 1-tap Octave -3..+3!)
   if (x == 0 && y >= 1 && y <= 3) return true;   // Left column: Tab(REESE), Fn(CHAIN), Ctrl(ACID)
   if (y == 1 && (x == 9 || x == 10 || x == 13)) return true; // O, P, \ (REC)
-  if (y == 2 && (x == 9 || x == 10 || x == 11 || x == 12 || x == 13)) return true; // K, L, ; (KEY), ', Enter
+  if (y == 2 && (x == 9 || x == 10 || x == 12 || x == 13)) return true; // K, L, ', Enter
   if (y == 3 && x == 12) return true; // / (GUIDE)
   return false;
 }
@@ -1370,7 +1371,6 @@ static const char* holdPosLabel(int x, int y) {
   if (y == 1 && x == 13) return isRecording ? "STOP REC" : "REC WAV";
   if (y == 2 && x == 9)  return "MOD FX";
   if (y == 2 && x == 10) return "FILTER";
-  if (y == 2 && x == 11) return "KEY +1";
   if (y == 2 && x == 12) return "THEME";
   if (y == 2 && x == 13) return isPlayingRec ? "STOP PLAY" : "PLAY REC";
   if (y == 3 && x == 12) return guideActive ? "GUIDE OFF" : "GUIDE ON";
@@ -1422,7 +1422,6 @@ static void fireHoldPos(int x, int y) {
   } else if (y == 2) {
     if (x == 9)       synth.modMode    = (synth.modMode + 1) % 3;
     else if (x == 10) synth.filterMode = (synth.filterMode + 1) % 3;
-    else if (x == 11) { transpose = (transpose >= 11) ? 0 : (transpose + 1); synth.releaseAll(); }
     else if (x == 12) { themeIdx = (themeIdx + 1) % THEME_COUNT; saveThemeToNVS(); }
     else if (x == 13) { if (isPlayingRec) stopPlaybackRec(); else startPlaybackRec(); }
   } else if (y == 3 && x == 12) {
